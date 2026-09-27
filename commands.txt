@@ -1,0 +1,5 @@
+kubectl apply -f operator/crd.yaml
+
+kopf run src/main.py --all-namespaces
+
+uvicorn src.app:app --reload

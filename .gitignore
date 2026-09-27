@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.terraform.lock.hcl
+infrastructure/*-config
+
+.idea/
+.vscode/
+kubeconfig
