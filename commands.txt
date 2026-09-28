@@ -1,5 +1,13 @@
+terraform apply -auto-approve
+
+kind export kubeconfig --name edge-workload-dispatcher
+
+docker build -t ubuntu-ssh:latest images/workspace/
+kind load docker-image ubuntu-ssh:latest --name edge-workload-dispatcher
+
+kopf run operator/src/main.py --all-namespaces
+
+uvicorn services.portal.src.app:app --reload
+
 kubectl apply -f operator/crd.yaml
-
-kopf run src/main.py --all-namespaces
-
-uvicorn src.app:app --reload
+kubectl label node edge-workload-dispatcher-worker2 gpu-free=4 --overwrite

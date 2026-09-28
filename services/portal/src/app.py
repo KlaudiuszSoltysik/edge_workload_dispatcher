@@ -1,6 +1,7 @@
 import kubernetes
 from fastapi import FastAPI, HTTPException
 from kubernetes import client
+from kubernetes.client.rest import ApiException
 
 app = FastAPI(title="Edge Workload Portal", version="1.0.0")
 
@@ -11,10 +12,10 @@ custom_api = client.CustomObjectsApi()
 
 @app.get("/api/v1/hardware/available")
 def list_available_hardware():
-    nodes = core_api.list_node().items
+    nodes = core_api.list_node().items  # type: ignore
     available = []
 
-    for node in nodes:
+    for node in nodes:  # type: ignore
         labels = node.metadata.labels
         gpu_model = labels.get("gpu-model")
         free_gpus = int(labels.get("gpu-free", 0))
@@ -38,7 +39,7 @@ def request_task(
     image: str = "ubuntu-ssh:latest",
 ):
     task_body = {
-        "apiVersion": "edge.ks.ops/v1",
+        "apiVersion": "edge.platform/v1",
         "kind": "ComputeTask",
         "metadata": {"generateName": "client-task-"},
         "spec": {
@@ -51,12 +52,27 @@ def request_task(
 
     try:
         created_task = custom_api.create_namespaced_custom_object(
-            group="edge.ks.ops",
+            group="edge.platform",
             version="v1",
             namespace="default",
             plural="computetasks",
             body=task_body,
         )
-        return {"status": "Submitted", "task_name": created_task["metadata"]["name"]}
-    except client.exceptions.ApiException as err:
-        raise HTTPException(status_code=500, detail=str(err))
+        return {"status": "Submitted", "task_name": created_task["metadata"]["name"]}  # type: ignore
+    except ApiException as err:
+        raise HTTPException(status_code=int(err.status or 500), detail=str(err))
+
+
+@app.delete("/api/v1/tasks/{task_name}")
+def delete_task(task_name: str):
+    try:
+        custom_api.delete_namespaced_custom_object(
+            group="edge.platform",
+            version="v1",
+            namespace="default",
+            plural="computetasks",
+            name=task_name,
+        )
+        return {"status": "Deleted", "task_name": task_name}
+    except ApiException as err:
+        raise HTTPException(status_code=int(err.status or 500), detail=str(err))

@@ -1,7 +1,8 @@
 import kopf
 import kubernetes
 from kubernetes import client
-from scheduler import allocate_gpu_on_node, find_available_node
+from kubernetes.client.rest import ApiException
+from scheduler import allocate_gpu_on_node, find_available_node, release_gpu_on_node
 
 GPU_RAM_MAPPING = {"rtx-3060": 2, "l40s": 4}
 
@@ -11,7 +12,7 @@ def configure(settings: kopf.OperatorSettings, **_):
     kubernetes.config.load_kube_config()
 
 
-@kopf.on.create("edge.ks.ops", "v1", "computetasks")
+@kopf.on.create("edge.platform", "v1", "computetasks")
 def create_task(spec, name, namespace, logger, **kwargs):
     core_api = client.CoreV1Api()
 
@@ -31,15 +32,28 @@ def create_task(spec, name, namespace, logger, **kwargs):
 
     allocate_gpu_on_node(core_api, target_node, gpu_count)
 
+    pvc_manifest = {
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {
+            "name": f"{name}-pvc",
+            "labels": {"app": f"{name}-workload"},
+        },
+        "spec": {
+            "accessModes": ["ReadWriteOnce"],
+            "resources": {"requests": {"storage": f"{disk_gb}Gi"}},
+        },
+    }
+
     pod_manifest = {
         "apiVersion": "v1",
         "kind": "Pod",
         "metadata": {
             "name": f"{name}-workload",
-            "labels": {"app": f"workload-{name}"},
+            "labels": {"app": f"{name}-workload"},
         },
         "spec": {
-            "nodeName": target_node,
+            "nodeSelector": {"kubernetes.io/hostname": target_node},
             "containers": [
                 {
                     "name": "workspace",
@@ -49,13 +63,22 @@ def create_task(spec, name, namespace, logger, **kwargs):
                     "resources": {
                         "requests": {
                             "memory": f"{total_ram_gb}Gi",
-                            "ephemeral-storage": f"{disk_gb}Gi",
+                            "ephemeral-storage": "1Gi",
                         },
                         "limits": {
                             "memory": f"{total_ram_gb}Gi",
-                            "ephemeral-storage": f"{disk_gb}Gi",
+                            "ephemeral-storage": "1Gi",
                         },
                     },
+                    "volumeMounts": [
+                        {"name": "persistent-storage", "mountPath": "/workspace"}
+                    ],
+                }
+            ],
+            "volumes": [
+                {
+                    "name": "persistent-storage",
+                    "persistentVolumeClaim": {"claimName": f"{name}-pvc"},
                 }
             ],
         },
@@ -64,24 +87,51 @@ def create_task(spec, name, namespace, logger, **kwargs):
     service_manifest = {
         "apiVersion": "v1",
         "kind": "Service",
-        "metadata": {"name": f"{name}-ssh-svc"},
+        "metadata": {"name": f"{name}-svc"},
         "spec": {
             "type": "NodePort",
-            "selector": {"app": f"workload-{name}"},
+            "selector": {"app": f"{name}-workload"},
             "ports": [{"port": 22, "targetPort": 22}],
         },
     }
 
+    kopf.adopt(pvc_manifest)
     kopf.adopt(pod_manifest)
     kopf.adopt(service_manifest)
 
+    core_api.create_namespaced_persistent_volume_claim(
+        namespace=namespace, body=pvc_manifest
+    )
     core_api.create_namespaced_pod(namespace=namespace, body=pod_manifest)
 
     svc = core_api.create_namespaced_service(namespace=namespace, body=service_manifest)
-    node_port = svc.spec.ports[0].node_port
+    node_port = svc.spec.ports[0].node_port  # type: ignore
 
     return {
         "status": "Running",
         "allocatedNode": target_node,
-        "sshCommand": f"ssh root@localhost -p {node_port} (hasło: edge2026)",
+        "sshCommand": f"ssh root@localhost -p {node_port} (password: edge2026)",
     }
+
+
+@kopf.on.delete("edge.platform", "v1", "computetasks")
+def delete_task(spec, name, namespace, logger, **kwargs):
+    core_api = client.CoreV1Api()
+    gpu_count = spec.get("gpuCount", 1)
+
+    try:
+        pod = core_api.read_namespaced_pod(name=f"{name}-workload", namespace=namespace)
+        allocated_node = pod.spec.node_name  # type: ignore
+
+        if allocated_node:
+            logger.info(f"Releasing {gpu_count} GPU(s) on node {allocated_node}")
+            release_gpu_on_node(core_api, allocated_node, gpu_count)
+
+    except ApiException as err:
+        status_code = err.status if err.status is not None else 500
+        if status_code == 404:
+            logger.warning(
+                f"Pod for {name} not found, cannot determine node to release GPU."
+            )
+        else:
+            logger.error(f"Error reading pod: {err}")
