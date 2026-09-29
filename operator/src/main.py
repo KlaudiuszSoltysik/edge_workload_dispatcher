@@ -4,7 +4,10 @@ from kubernetes import client
 from kubernetes.client.rest import ApiException
 from scheduler import allocate_gpu_on_node, find_available_node, release_gpu_on_node
 
-SPECS_MAPPING = {"rtx-3060": {"cpu": 2, "ram": 2}, "l40s": {"cpu": 4, "ram": 4}}
+GROUP = "edge.platform"
+VERSION = "v1"
+PLURAL = "computetasks"
+SPECS_MAPPING = {"rtx-3060": {"cpu": 0.1, "ram": 0.1}, "l40s": {"cpu": 0.2, "ram": 0.2}}
 
 
 @kopf.on.startup()
@@ -12,15 +15,16 @@ def configure(settings: kopf.OperatorSettings, **_):
     kubernetes.config.load_kube_config()
 
 
-@kopf.on.create("edge.platform", "v1", "computetasks")
+# TODO: Add logging
+@kopf.on.create(GROUP, VERSION, PLURAL)
 def create_task(spec, name, namespace, logger, **kwargs):
     core_api = client.CoreV1Api()
     networking_api = client.NetworkingV1Api()
 
-    gpu_model = spec.get("gpuModel")
-    gpu_count = spec.get("gpuCount", 1)
-    disk_gb = spec.get("diskGb", 2)
-    image = spec.get("image", "ubuntu-ssh:latest")
+    gpu_model = spec["gpuModel"]
+    gpu_count = spec["gpuCount"]
+    disk_gb = spec["diskGb"]
+    image = spec["image"]
 
     cpu_per_gpu = SPECS_MAPPING[gpu_model]["cpu"]
     total_cpu = cpu_per_gpu * gpu_count
@@ -37,7 +41,7 @@ def create_task(spec, name, namespace, logger, **kwargs):
     allocate_gpu_on_node(core_api, target_node, gpu_count)
 
     pvc_manifest = {
-        "apiVersion": "v1",
+        "apiVersion": VERSION,
         "kind": "PersistentVolumeClaim",
         "metadata": {
             "name": f"{name}-pvc",
@@ -50,7 +54,7 @@ def create_task(spec, name, namespace, logger, **kwargs):
     }
 
     pod_manifest = {
-        "apiVersion": "v1",
+        "apiVersion": VERSION,
         "kind": "Pod",
         "metadata": {
             "name": f"{name}-workload",
@@ -109,7 +113,7 @@ def create_task(spec, name, namespace, logger, **kwargs):
     }
 
     service_manifest = {
-        "apiVersion": "v1",
+        "apiVersion": VERSION,
         "kind": "Service",
         "metadata": {"name": f"{name}-svc"},
         "spec": {
@@ -180,15 +184,14 @@ def create_task(spec, name, namespace, logger, **kwargs):
             node_ip = addr.address
             break
 
-    # Zwracamy pełen, poprawny adres URL
     return {
-        "status": "Running",
+        "status": "Scheduling",
         "allocatedNode": target_node,
         "webTerminalUrl": f"http://{node_ip}:{node_port}",
     }
 
 
-@kopf.on.delete("edge.platform", "v1", "computetasks")
+@kopf.on.delete(GROUP, VERSION, PLURAL)
 def delete_task(spec, name, namespace, logger, **kwargs):
     core_api = client.CoreV1Api()
     gpu_count = spec.get("gpuCount", 1)
@@ -209,3 +212,48 @@ def delete_task(spec, name, namespace, logger, **kwargs):
             logger.error(f"Unexpected API error during deletion: {err}")
     except Exception as err:  # noqa: BLE001
         logger.error(f"Unhandled error during task deletion: {err}")
+
+
+@kopf.on.event("", VERSION, "pods", labels={"app": kopf.PRESENT})
+def sync_pod_status(event, body, logger, **kwargs):
+    owner_references = body.get("metadata", {}).get("ownerReferences", [])
+    if not owner_references:
+        return
+
+    task_name = None
+    for ref in owner_references:
+        if ref.get("kind") == "ComputeTask":
+            task_name = ref.get("name")
+            break
+
+    if not task_name:
+        return
+
+    pod_phase = body.get("status", {}).get("phase", "Unknown")
+    namespace = body["metadata"]["namespace"]
+
+    custom_api = client.CustomObjectsApi()
+
+    try:
+        task = custom_api.get_namespaced_custom_object(
+            group=GROUP,
+            version=VERSION,
+            namespace=namespace,
+            plural=PLURAL,
+            name=task_name,
+        )
+        current_status = task.get("status", {}).get("create_task", {})  # type: ignore
+
+        if current_status.get("status") != pod_phase:
+            patch = {"status": {"create_task": {**current_status, "status": pod_phase}}}
+            custom_api.patch_namespaced_custom_object_status(
+                group=GROUP,
+                version=VERSION,
+                namespace=namespace,
+                plural=PLURAL,
+                name=task_name,
+                body=patch,
+            )
+    except ApiException as err:
+        if err.status != 404:
+            logger.error(f"Failed to sync status for {task_name}: {err}")

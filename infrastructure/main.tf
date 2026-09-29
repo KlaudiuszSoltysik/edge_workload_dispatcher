@@ -40,5 +40,35 @@ resource "kind_cluster" "dispatcher_cluster" {
         "gpu-free"  = "4"
       }
     }
+
+    node {
+      role = "worker"
+      labels = {
+        "size"      = "S"
+        "gpu-model" = "l40s"
+        "gpu-total" = "4"
+        "gpu-free"  = "4"
+      }
+    }
+
+    node {
+      role = "worker"
+      labels = {
+        "size"      = "M"
+        "gpu-model" = "l40s"
+        "gpu-total" = "8"
+        "gpu-free"  = "8"
+      }
+    }
+
+    node {
+      role = "worker"
+      labels = {
+        "size"      = "L"
+        "gpu-model" = "l40s"
+        "gpu-total" = "16"
+        "gpu-free"  = "16"
+      }
+    }
   }
 }

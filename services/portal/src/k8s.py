@@ -5,13 +5,11 @@ kubernetes.config.load_kube_config()
 core_api = client.CoreV1Api()
 custom_api = client.CustomObjectsApi()
 
-# Constant definition matching crd.yaml and operator
 GROUP = "edge.platform"
 VERSION = "v1"
 PLURAL = "computetasks"
 
 def get_available_hardware():
-    """Fetches available nodes and their free GPUs."""
     nodes = core_api.list_node().items # type: ignore
     available = []
 
@@ -20,7 +18,7 @@ def get_available_hardware():
         gpu_model = labels.get("gpu-model")
         free_gpus = int(labels.get("gpu-free", 0))
 
-        if gpu_model and gpu_model != "none" and free_gpus > 0:
+        if gpu_model is not None and free_gpus is not None:
             available.append({
                 "node": node.metadata.name,
                 "gpu_model": gpu_model,
@@ -30,7 +28,6 @@ def get_available_hardware():
     return available
 
 def get_all_tasks():
-    """Lists all provisioned ComputeTasks."""
     tasks = custom_api.list_namespaced_custom_object(
         group=GROUP,
         version=VERSION,

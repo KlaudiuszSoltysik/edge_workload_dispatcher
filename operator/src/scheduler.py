@@ -9,8 +9,8 @@ def find_available_node(
     for node in nodes:  # type: ignore
         labels = node.metadata.labels
 
-        if labels.get("gpu-model") == gpu_model:
-            free_gpus = int(labels.get("gpu-free", 0))
+        if labels["gpu-model"] == gpu_model:
+            free_gpus = int(labels["gpu-free"])
 
             if free_gpus >= gpu_count:
                 return node.metadata.name
@@ -22,7 +22,7 @@ def allocate_gpu_on_node(
     api: client.CoreV1Api, node_name: str, allocated_count: int
 ) -> None:
     node = api.read_node(node_name)
-    current_free = int(node.metadata.labels.get("gpu-free", 0))  # type: ignore
+    current_free = int(node.metadata.labels["gpu-free"])  # type: ignore
     new_free = current_free - allocated_count
 
     patch_body = {"metadata": {"labels": {"gpu-free": str(new_free)}}}
@@ -34,7 +34,7 @@ def release_gpu_on_node(
     api: client.CoreV1Api, node_name: str, released_count: int
 ) -> None:
     node = api.read_node(node_name)
-    current_free = int(node.metadata.labels.get("gpu-free", 0))  # type: ignore
+    current_free = int(node.metadata.labels["gpu-free"])  # type: ignore
     new_free = current_free + released_count
 
     patch_body = {"metadata": {"labels": {"gpu-free": str(new_free)}}}
