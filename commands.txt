@@ -7,7 +7,7 @@ kind load docker-image ubuntu-ssh:latest --name edge-workload-dispatcher
 
 kopf run operator/src/main.py --all-namespaces
 
-uvicorn services.portal.src.app:app --reload
+uvicorn services.portal.src.main:app --reload
 
 kubectl apply -f operator/crd.yaml
 kubectl label node edge-workload-dispatcher-worker2 gpu-free=4 --overwrite

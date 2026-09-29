@@ -1,11 +1,20 @@
 FROM ubuntu:latest
 
-RUN apt-get update && apt-get install -y openssh-server && \
-    mkdir -p /var/run/sshd /run/sshd && \
-    apt-get clean
+ENV DEBIAN_FRONTEND=noninteractive
 
-RUN echo 'root:edge2026' | chpasswd
-RUN sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
+RUN apt-get update && apt-get install -y \
+    curl \
+    ca-certificates \
+    bash \
+    htop \
+    build-essential \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-EXPOSE 22
-CMD ["/usr/sbin/sshd", "-D"]
+RUN curl -fsSL https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64 -o /usr/local/bin/ttyd && \
+    chmod +x /usr/local/bin/ttyd
+
+WORKDIR /workspace
+
+EXPOSE 7681
+
+CMD ["ttyd", "-W", "-p", "7681", "bash"]

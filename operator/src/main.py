@@ -64,7 +64,7 @@ def create_task(spec, name, namespace, logger, **kwargs):
                     "name": "workspace",
                     "image": image,
                     "imagePullPolicy": "IfNotPresent",
-                    "ports": [{"containerPort": 22}],
+                    "ports": [{"containerPort": 7681}],
                     "resources": {
                         "requests": {
                             "cpu": total_cpu,
@@ -115,7 +115,7 @@ def create_task(spec, name, namespace, logger, **kwargs):
         "spec": {
             "type": "NodePort",
             "selector": {"app": f"{name}-workload"},
-            "ports": [{"port": 22, "targetPort": 22}],
+            "ports": [{"port": 7681, "targetPort": 7681}],
         },
     }
 
@@ -130,7 +130,7 @@ def create_task(spec, name, namespace, logger, **kwargs):
         "spec": {
             "podSelector": {"matchLabels": {"app": f"{name}-workload"}},
             "policyTypes": ["Ingress", "Egress"],
-            "ingress": [{"ports": [{"port": 22, "protocol": "TCP"}]}],
+            "ingress": [{"ports": [{"port": 7681, "protocol": "TCP"}]}],
             "egress": [
                 {
                     "ports": [
@@ -173,10 +173,18 @@ def create_task(spec, name, namespace, logger, **kwargs):
     svc = core_api.create_namespaced_service(namespace=namespace, body=service_manifest)
     node_port = svc.spec.ports[0].node_port  # type: ignore
 
+    node_info = core_api.read_node(target_node)
+    node_ip = "127.0.0.1"
+    for addr in node_info.status.addresses:  # type: ignore
+        if addr.type == "InternalIP":
+            node_ip = addr.address
+            break
+
+    # Zwracamy pełen, poprawny adres URL
     return {
         "status": "Running",
         "allocatedNode": target_node,
-        "sshCommand": f"ssh root@localhost -p {node_port} (password: edge2026)",
+        "webTerminalUrl": f"http://{node_ip}:{node_port}",
     }
 
 
@@ -192,12 +200,12 @@ def delete_task(spec, name, namespace, logger, **kwargs):
         if allocated_node:
             logger.info(f"Releasing {gpu_count} GPU(s) on node {allocated_node}")
             release_gpu_on_node(core_api, allocated_node, gpu_count)
-
     except ApiException as err:
-        status_code = err.status if err.status is not None else 500
-        if status_code == 404:
+        if err.status == 404:
             logger.warning(
-                f"Pod for {name} not found, cannot determine node to release GPU."
+                f"Pod {name}-workload was already deleted, skipping GPU node lookup"
             )
         else:
-            logger.error(f"Error reading pod: {err}")
+            logger.error(f"Unexpected API error during deletion: {err}")
+    except Exception as err:  # noqa: BLE001
+        logger.error(f"Unhandled error during task deletion: {err}")
