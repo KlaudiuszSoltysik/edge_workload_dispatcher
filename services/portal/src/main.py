@@ -1,4 +1,5 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from kubernetes.client.rest import ApiException
 
@@ -50,3 +51,23 @@ def delete_task_endpoint(task_name: str):
         return {"status": "Deleted", "task_name": task_name}
     except ApiException as err:
         raise HTTPException(status_code=int(err.status or 500), detail=str(err))
+
+
+@app.get("/chat", response_class=HTMLResponse)
+async def chat_page(request: Request):
+    return templates.TemplateResponse(
+        request=request, name="chat.html", context={"request": request, "result": None}
+    )
+
+
+@app.post("/chat", response_class=HTMLResponse)
+async def handle_prompt(
+    request: Request, task_type: str = Form(...), prompt: str = Form(...)
+):
+    result = k8s.submit_and_wait_for_task(task_type, prompt)
+
+    return templates.TemplateResponse(
+        request=request,
+        name="chat.html",
+        context={"request": request, "result": result, "last_prompt": prompt},
+    )

@@ -12,5 +12,5 @@ uvicorn services.portal.src.main:app --reload
 kubectl apply -f operator/crd.yaml
 kubectl label node edge-workload-dispatcher-worker2 gpu-free=4 --overwrite
 
-docker stop edge-workload-dispatcher-control-plane edge-workload-dispatcher-worker edge-workload-dispatcher-worker2
-docker start edge-workload-dispatcher-control-plane edge-workload-dispatcher-worker edge-workload-dispatcher-worker2
+docker stop
+docker start

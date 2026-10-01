@@ -9,7 +9,7 @@ def find_available_node(
     for node in nodes:  # type: ignore
         labels = node.metadata.labels
 
-        if labels["gpu-model"] == gpu_model:
+        if labels.get("gpu-model") == gpu_model:
             free_gpus = int(labels["gpu-free"])
 
             if free_gpus >= gpu_count:

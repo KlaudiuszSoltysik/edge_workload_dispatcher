@@ -1,0 +1,39 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Edge API Portal</title>
+  </head>
+  <body>
+    <h1>Edge API Portal</h1>
+
+    <form method="post" action="/chat">
+      <label for="task_type">Model:</label>
+      <select name="task_type" id="task_type">
+        <option value="llm">LLM</option>
+        <option value="vision">Vision</option>
+        <option value="audio">Audio</option>
+      </select>
+
+      <br /><br />
+
+      <label for="prompt">Prompt:</label><br />
+      <textarea
+        name="prompt"
+        id="prompt"
+        rows="4"
+        cols="50"
+        required
+      ></textarea>
+
+      <br /><br />
+
+      <button type="submit">Submit Task</button>
+    </form>
+
+    {% if result %}
+    <hr />
+    <h3>Result:</h3>
+    <pre>{{ result }}</pre>
+    {% endif %}
+  </body>
+</html>

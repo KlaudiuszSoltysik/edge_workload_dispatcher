@@ -61,6 +61,7 @@ def create_task(spec, name, namespace, logger, **kwargs):
             "labels": {"app": f"{name}-workload"},
         },
         "spec": {
+            "priorityClassName": "vip-provisioning",
             "automountServiceAccountToken": False,
             "nodeSelector": {"kubernetes.io/hostname": target_node},
             "containers": [
@@ -99,7 +100,12 @@ def create_task(spec, name, namespace, logger, **kwargs):
                         },
                     },
                     "volumeMounts": [
-                        {"name": "persistent-storage", "mountPath": "/workspace"}
+                        {"name": "persistent-storage", "mountPath": "/workspace"},
+                        {
+                            "name": "model-storage",
+                            "mountPath": "/opt/models",
+                            "readOnly": True,
+                        },
                     ],
                 }
             ],
@@ -107,7 +113,14 @@ def create_task(spec, name, namespace, logger, **kwargs):
                 {
                     "name": "persistent-storage",
                     "persistentVolumeClaim": {"claimName": f"{name}-pvc"},
-                }
+                },
+                {
+                    "name": "model-storage",
+                    "hostPath": {
+                        "path": "/opt/models",
+                        "type": "DirectoryOrCreate",
+                    },
+                },
             ],
         },
     }
@@ -117,9 +130,36 @@ def create_task(spec, name, namespace, logger, **kwargs):
         "kind": "Service",
         "metadata": {"name": f"{name}-svc"},
         "spec": {
-            "type": "NodePort",
             "selector": {"app": f"{name}-workload"},
             "ports": [{"port": 7681, "targetPort": 7681}],
+        },
+    }
+
+    ingress_manifest = {
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "Ingress",
+        "metadata": {"name": f"{name}-ingress", "labels": {"app": f"{name}-workload"}},
+        "spec": {
+            "ingressClassName": "nginx",
+            "rules": [
+                {
+                    "host": f"{name}.localhost",
+                    "http": {
+                        "paths": [
+                            {
+                                "path": "/",
+                                "pathType": "Prefix",
+                                "backend": {
+                                    "service": {
+                                        "name": f"{name}-svc",
+                                        "port": {"number": 7681},
+                                    }
+                                },
+                            }
+                        ]
+                    },
+                }
+            ],
         },
     }
 
@@ -163,31 +203,24 @@ def create_task(spec, name, namespace, logger, **kwargs):
 
     kopf.adopt(pvc_manifest)
     kopf.adopt(pod_manifest)
-    kopf.adopt(network_policy_manifest)
     kopf.adopt(service_manifest)
+    kopf.adopt(ingress_manifest)
+    kopf.adopt(network_policy_manifest)
 
     core_api.create_namespaced_persistent_volume_claim(
         namespace=namespace, body=pvc_manifest
     )
     core_api.create_namespaced_pod(namespace=namespace, body=pod_manifest)
+    core_api.create_namespaced_service(namespace=namespace, body=service_manifest)
+    networking_api.create_namespaced_ingress(namespace=namespace, body=ingress_manifest)
     networking_api.create_namespaced_network_policy(
         namespace=namespace, body=network_policy_manifest
     )
 
-    svc = core_api.create_namespaced_service(namespace=namespace, body=service_manifest)
-    node_port = svc.spec.ports[0].node_port  # type: ignore
-
-    node_info = core_api.read_node(target_node)
-    node_ip = "127.0.0.1"
-    for addr in node_info.status.addresses:  # type: ignore
-        if addr.type == "InternalIP":
-            node_ip = addr.address
-            break
-
     return {
         "status": "Scheduling",
         "allocatedNode": target_node,
-        "webTerminalUrl": f"http://{node_ip}:{node_port}",
+        "webTerminalUrl": f"http://{name}.localhost",
     }
 
 
@@ -257,3 +290,115 @@ def sync_pod_status(event, body, logger, **kwargs):
     except ApiException as err:
         if err.status != 404:
             logger.error(f"Failed to sync status for {task_name}: {err}")
+
+
+@kopf.on.create(GROUP, VERSION, "batchtasks")
+def create_batch_task(spec, name, namespace, logger, **kwargs):
+    core_api = client.CoreV1Api()
+
+    task_type = spec["task_type"]
+    prompt = spec["prompt"]
+
+    # TODO: Fix later
+    target_node = find_available_node(core_api, gpu_model="rtx-3060", gpu_count=1)
+    if not target_node:
+        raise kopf.TemporaryError("No GPUs available. Batch task queued.", delay=5)
+
+    model_script = f"/opt/models/{task_type}_model.sh"
+
+    execution_command = f"{model_script} '{prompt}' | tee /dev/termination-log"
+
+    pod_manifest = {
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {
+            "name": f"{name}-runner",
+            "labels": {"batch-task-name": name, "role": "batch-worker"},
+        },
+        "spec": {
+            "priorityClassName": "batch-priority",
+            "restartPolicy": "Never",
+            "nodeSelector": {"kubernetes.io/hostname": target_node},
+            "containers": [
+                {
+                    "name": "runner",
+                    "image": "ubuntu:latest",
+                    "command": ["/bin/bash", "-c", execution_command],
+                    "volumeMounts": [
+                        {
+                            "name": "model-storage",
+                            "mountPath": "/opt/models",
+                            "readOnly": True,
+                        },
+                    ],
+                }
+            ],
+            "volumes": [
+                {
+                    "name": "model-storage",
+                    "hostPath": {"path": "/opt/models", "type": "Directory"},
+                }
+            ],
+        },
+    }
+
+    kopf.adopt(pod_manifest)
+    core_api.create_namespaced_pod(namespace=namespace, body=pod_manifest)
+
+    return {"status": "Pending", "allocatedNode": target_node}
+
+
+@kopf.on.event("", "v1", "pods", labels={"role": "batch-worker"})
+def capture_batch_result(event, body, logger, **kwargs):
+    status = body.get("status", {})
+    phase = status.get("phase")
+
+    if phase not in ["Succeeded", "Failed"]:
+        return
+
+    pod_name = body["metadata"]["name"]
+    namespace = body["metadata"]["namespace"]
+    task_name = body["metadata"]["labels"].get("batch-task-name")
+
+    if not task_name:
+        return
+
+    core_api = client.CoreV1Api()
+    custom_api = client.CustomObjectsApi()
+
+    result_text = "No output produced"
+    container_statuses = status.get("containerStatuses", [])
+    if container_statuses:
+        terminated_state = container_statuses[0].get("state", {}).get("terminated", {})
+        result_text = terminated_state.get("message", "Completed with empty message")
+
+    status_patch = {
+        "status": {
+            "phase": phase,
+            "result": result_text.strip(),
+        }
+    }
+
+    try:
+        custom_api.patch_namespaced_custom_object_status(
+            group=GROUP,
+            version=VERSION,
+            namespace=namespace,
+            plural="batchtasks",
+            name=task_name,
+            body=status_patch,
+        )
+        logger.info(f"Updated BatchTask {task_name} with status {phase}")
+    except ApiException as err:
+        logger.error(f"Failed to patch BatchTask status: {err}")
+
+    try:
+        core_api.delete_namespaced_pod(
+            name=pod_name,
+            namespace=namespace,
+            body=client.V1DeleteOptions(grace_period_seconds=0),
+        )
+        logger.info(f"Purged runner pod {pod_name} immediately after execution")
+    except ApiException as err:
+        if err.status != 404:
+            logger.error(f"Failed to delete runner pod: {err}")
