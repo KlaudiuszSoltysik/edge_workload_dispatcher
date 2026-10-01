@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{% block title %}Edge API Portal{% endblock %}</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+    {% block extra_head %}{% endblock %}
+  </head>
+  <body>
+    <nav class="navbar">
+      <div class="nav-brand">Edge Workload Dispatcher</div>
+      <div class="nav-links">
+        <a href="/provision">Provision</a>
+        <a href="/chat">Chat</a>
+      </div>
+    </nav>
+
+    <main class="container">{% block content %}{% endblock %}</main>
+
+    {% block scripts %} {% endblock %}
+  </body>
+</html>

@@ -2,7 +2,7 @@ import time
 import uuid
 
 import kubernetes
-from kubernetes import client, config
+from kubernetes import client
 from kubernetes.client.rest import ApiException
 
 kubernetes.config.load_kube_config()
@@ -111,8 +111,8 @@ def submit_and_wait_for_task(
                 name=task_name,
             )
 
-            status = task.get("status", {})
-            if "result" in status:
+            status = task.get("status", {}) # type: ignore
+            if "result" in status: # type: ignore
                 custom_api.delete_namespaced_custom_object(
                     group=GROUP,
                     version=VERSION,
@@ -120,7 +120,7 @@ def submit_and_wait_for_task(
                     plural=BATCH_PLURAL,
                     name=task_name,
                 )
-                return status["result"]
+                return status["result"] # type: ignore
 
         except ApiException:
             pass

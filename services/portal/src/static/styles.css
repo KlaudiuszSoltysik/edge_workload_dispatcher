@@ -1,0 +1,168 @@
+/* Reset & Base Setup */
+* {
+  box-sizing: border-box;
+}
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+  margin: 0;
+  background: #0f172a;
+  color: #f8fafc;
+}
+
+/* Navbar */
+.navbar {
+  background: #1e293b;
+  padding: 1rem 2rem;
+  border-bottom: 1px solid #334155;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.nav-brand {
+  font-size: 1.25rem;
+  font-weight: bold;
+}
+.nav-links a {
+  color: #94a3b8;
+  text-decoration: none;
+  margin-left: 1.5rem;
+  font-weight: 500;
+  transition: color 0.2s;
+}
+.nav-links a:hover {
+  color: #f8fafc;
+}
+
+/* Layout Container */
+.container {
+  padding: 2rem;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+h1 {
+  margin-top: 0;
+  margin-bottom: 1.5rem;
+  font-size: 1.75rem;
+}
+
+/* Cards */
+.card {
+  background: #1e293b;
+  padding: 1.5rem;
+  border-radius: 8px;
+  margin-bottom: 1.5rem;
+  border: 1px solid #334155;
+}
+.card h3 {
+  margin-top: 0;
+  margin-bottom: 1rem;
+  color: #f8fafc;
+}
+
+/* Forms */
+.form-group {
+  display: inline-block;
+  margin-right: 1.5rem;
+  margin-bottom: 1rem;
+  vertical-align: top;
+}
+.form-group.full-width {
+  display: block;
+  margin-right: 0;
+}
+label {
+  display: block;
+  margin-bottom: 0.5rem;
+  color: #94a3b8;
+  font-size: 0.9rem;
+}
+.form-control,
+select,
+input,
+textarea {
+  background: #0f172a;
+  color: #f8fafc;
+  border: 1px solid #334155;
+  padding: 0.5rem;
+  border-radius: 4px;
+  font-family: inherit;
+}
+textarea.form-control {
+  width: 100%;
+  max-width: 600px;
+  resize: vertical;
+}
+.form-control:focus,
+select:focus,
+input:focus,
+textarea:focus {
+  outline: none;
+  border-color: #2563eb;
+}
+
+/* Buttons */
+.btn,
+button {
+  background: #2563eb;
+  color: #fff;
+  border: none;
+  padding: 0.6rem 1.2rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.9rem;
+  display: inline-block;
+  text-decoration: none;
+  transition: background 0.2s;
+}
+.btn:hover,
+button:hover {
+  background: #1d4ed8;
+}
+
+.btn-danger,
+button.danger {
+  background: #dc2626;
+}
+.btn-danger:hover,
+button.danger:hover {
+  background: #b91c1c;
+}
+
+.btn-success,
+a.term-btn {
+  background: #059669;
+}
+.btn-success:hover,
+a.term-btn:hover {
+  background: #047857;
+}
+
+/* Tables */
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+th,
+td {
+  text-align: left;
+  padding: 0.75rem;
+  border-bottom: 1px solid #334155;
+}
+th {
+  color: #94a3b8;
+  font-weight: 600;
+}
+tr:last-child td {
+  border-bottom: none;
+}
+
+/* Output Data */
+pre {
+  background: #0f172a;
+  padding: 1rem;
+  border-radius: 4px;
+  border: 1px solid #334155;
+  overflow-x: auto;
+  white-space: pre-wrap;
+}

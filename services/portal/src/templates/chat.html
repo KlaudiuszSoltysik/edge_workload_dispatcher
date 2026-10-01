@@ -1,39 +1,42 @@
-<!doctype html>
-<html>
-  <head>
-    <title>Edge API Portal</title>
-  </head>
-  <body>
-    <h1>Edge API Portal</h1>
+{% extends "base.html" %}
 
-    <form method="post" action="/chat">
-      <label for="task_type">Model:</label>
-      <select name="task_type" id="task_type">
+{% block title %}Chat{% endblock %}
+
+{% block content %}
+<h1>Model Interaction</h1>
+
+<div class="card">
+  <form method="post" action="/chat">
+    <div class="form-group">
+      <label for="task_type">Model Type:</label>
+      <select name="task_type" id="task_type" class="form-control">
         <option value="llm">LLM</option>
         <option value="vision">Vision</option>
         <option value="audio">Audio</option>
       </select>
+    </div>
 
-      <br /><br />
-
-      <label for="prompt">Prompt:</label><br />
+    <div class="form-group full-width">
+      <label for="prompt">Prompt:</label>
       <textarea
         name="prompt"
         id="prompt"
         rows="4"
-        cols="50"
+        class="form-control"
         required
-      ></textarea>
+      >{{ last_prompt | default('') }}</textarea>
+    </div>
 
-      <br /><br />
+    <div class="form-group full-width">
+      <button type="submit" class="btn">Submit Task</button>
+    </div>
+  </form>
+</div>
 
-      <button type="submit">Submit Task</button>
-    </form>
-
-    {% if result %}
-    <hr />
-    <h3>Result:</h3>
-    <pre>{{ result }}</pre>
-    {% endif %}
-  </body>
-</html>
+{% if result %}
+<div class="card">
+  <h3>Result:</h3>
+  <pre>{{ result }}</pre>
+</div>
+{% endif %}
+{% endblock %}

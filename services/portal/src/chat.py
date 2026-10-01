@@ -1,0 +1,28 @@
+from fastapi import APIRouter, Form, Request
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
+
+from . import k8s
+
+router = APIRouter(tags=["chat"])
+templates = Jinja2Templates(directory="services/portal/src/templates")
+
+
+@router.get("/chat", response_class=HTMLResponse)
+async def chat_page(request: Request):
+    return templates.TemplateResponse(
+        request=request, name="chat.html", context={"request": request, "result": None}
+    )
+
+
+@router.post("/chat", response_class=HTMLResponse)
+async def handle_prompt(
+    request: Request, task_type: str = Form(...), prompt: str = Form(...)
+):
+    result = k8s.submit_and_wait_for_task(task_type, prompt)
+
+    return templates.TemplateResponse(
+        request=request,
+        name="chat.html",
+        context={"request": request, "result": result, "last_prompt": prompt},
+    )

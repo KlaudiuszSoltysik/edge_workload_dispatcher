@@ -1,0 +1,206 @@
+{% extends "base.html" %} {% block title %}Edge Workload Dispatcher{% endblock
+%} {% block content %}
+<h1>Provision</h1>
+
+<div class="card">
+  <h3>Provision New Instance</h3>
+  <div class="form-group">
+    <label for="gpuModel">Available GPU Pool:</label>
+    <select
+      id="gpuModel"
+      class="form-control"
+      onchange="updateMaxGpuCount()"
+    ></select>
+  </div>
+
+  <div class="form-group">
+    <label for="gpuCount">GPU Count:</label>
+    <input
+      type="number"
+      id="gpuCount"
+      class="form-control"
+      value="1"
+      min="1"
+      max="1"
+      style="width: 80px"
+    />
+  </div>
+
+  <div class="form-group">
+    <label for="diskGb">Disk (GB):</label>
+    <input
+      type="number"
+      id="diskGb"
+      class="form-control"
+      value="5"
+      min="1"
+      max="50"
+      style="width: 80px"
+    />
+  </div>
+
+  <div class="form-group">
+    <!-- Empty label for visual alignment with inputs -->
+    <label>&nbsp;</label>
+    <button class="btn" onclick="provisionTask()">Launch Instance</button>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Active Workloads</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Task Name</th>
+        <th>Model</th>
+        <th>GPUs</th>
+        <th>Status</th>
+        <th>Node</th>
+        <th>Terminal</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody id="tasksBody"></tbody>
+  </table>
+</div>
+{% endblock %} {% block scripts %}
+<script>
+  let availableHardware = [];
+
+  async function loadHardware() {
+    try {
+      const res = await fetch("/api/v1/hardware/available");
+      const data = await res.json();
+      availableHardware = data.available_hardware;
+
+      const select = document.getElementById("gpuModel");
+      const currentSelection = select.value;
+      select.innerHTML = "";
+
+      if (availableHardware.length === 0) {
+        const opt = document.createElement("option");
+        opt.textContent = "No hardware available";
+        opt.disabled = true;
+        select.appendChild(opt);
+        document.getElementById("gpuCount").max = 1;
+        return;
+      }
+
+      availableHardware.forEach((hw) => {
+        const opt = document.createElement("option");
+        opt.value = hw.gpu_model;
+        opt.dataset.max = hw.gpu_free;
+        opt.textContent = `${hw.gpu_model.toUpperCase()} (Available: ${hw.gpu_free} on ${hw.node})`;
+        select.appendChild(opt);
+      });
+
+      if (
+        currentSelection &&
+        select.querySelector(`option[value="${currentSelection}"]`)
+      ) {
+        select.value = currentSelection;
+      }
+      updateMaxGpuCount();
+    } catch (err) {
+      console.error("Failed to load hardware pool:", err);
+    }
+  }
+
+  function updateMaxGpuCount() {
+    const select = document.getElementById("gpuModel");
+    const countInput = document.getElementById("gpuCount");
+    if (select.options.length > 0 && !select.options[0].disabled) {
+      const maxFree = select.options[select.selectedIndex].dataset.max;
+      countInput.max = maxFree;
+      if (parseInt(countInput.value) > parseInt(maxFree)) {
+        countInput.value = maxFree;
+      }
+    }
+  }
+
+  async function loadTasks() {
+    try {
+      const res = await fetch("/api/v1/tasks");
+      const tasks = await res.json();
+      const tbody = document.getElementById("tasksBody");
+      tbody.innerHTML = "";
+
+      for (const task of tasks) {
+        const name = task.metadata.name;
+        const model = task.spec.gpuModel;
+        const count = task.spec.gpuCount || 1;
+
+        const statusObj = task.status
+          ? task.status.create_task || task.status
+          : null;
+        const status = statusObj ? statusObj.status : "Pending";
+        const node = statusObj ? statusObj.allocatedNode : "Pending";
+        const termUrl = statusObj ? statusObj.webTerminalUrl : null;
+
+        const row = document.createElement("tr");
+        row.innerHTML = `
+            <td>${name}</td>
+            <td>${model.toUpperCase()}</td>
+            <td>${count}</td>
+            <td>${status}</td>
+            <td>${node}</td>
+            <td>${termUrl ? `<a class="btn btn-success term-btn" href="${termUrl}" target="_blank">Open Console</a>` : "Initializing..."}</td>
+            <td><button class="btn btn-danger danger" onclick="deleteTask('${name}')">Terminate</button></td>
+        `;
+        tbody.appendChild(row);
+      }
+    } catch (err) {
+      console.error("Failed to load tasks:", err);
+    }
+  }
+
+  async function deleteTask(name) {
+    if (!confirm(`Are you sure you want to terminate ${name}?`)) return;
+
+    try {
+      const res = await fetch(`/api/v1/tasks/${name}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        const errorData = await res.json();
+        alert(`Error deleting task: ${errorData.detail || res.statusText}`);
+        return;
+      }
+      setTimeout(() => {
+        loadTasks();
+        loadHardware();
+      }, 1500);
+    } catch (err) {
+      alert(`Request failed: ${err}`);
+    }
+  }
+
+  async function provisionTask() {
+    const gpuModel = document.getElementById("gpuModel").value;
+    const gpuCount = parseInt(document.getElementById("gpuCount").value, 10);
+    const diskGb = parseInt(document.getElementById("diskGb").value, 10);
+
+    if (!gpuModel) return alert("No hardware available!");
+
+    try {
+      await fetch(
+        `/api/v1/tasks/provision?gpu_model=${gpuModel}&gpu_count=${gpuCount}&disk_gb=${diskGb}`,
+        { method: "POST" },
+      );
+      setTimeout(() => {
+        loadTasks();
+        loadHardware();
+      }, 1500);
+    } catch (err) {
+      alert(`Provision request failed: ${err}`);
+    }
+  }
+
+  // Initialization
+  loadHardware();
+  loadTasks();
+
+  setInterval(loadTasks, 5000);
+  setInterval(loadHardware, 10000);
+</script>
+{% endblock %}
