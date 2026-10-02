@@ -1,10 +1,14 @@
 import json
 import urllib.request
 
-import kubernetes
-from kubernetes import client
+from kubernetes import client, config
+from kubernetes.config.config_exception import ConfigException
 
-kubernetes.config.load_kube_config()
+try:
+    config.load_incluster_config()
+except ConfigException:
+    config.load_kube_config()
+
 core_api = client.CoreV1Api()
 custom_api = client.CustomObjectsApi()
 

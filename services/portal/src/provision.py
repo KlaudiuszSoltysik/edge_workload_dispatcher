@@ -3,10 +3,11 @@ from fastapi.templating import Jinja2Templates
 from kubernetes.client.rest import ApiException
 
 from . import k8s
+from .config import BASE_DIR
 
 api_router = APIRouter(prefix="/api/v1", tags=["provisioning"])
 views_router = APIRouter(tags=["views"])
-templates = Jinja2Templates(directory="services/portal/src/templates")
+templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 
 @views_router.get("/provision")

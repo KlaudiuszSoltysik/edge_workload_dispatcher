@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: edge-portal
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: edge-portal
+  template:
+    metadata:
+      labels:
+        app: edge-portal
+    spec:
+      serviceAccountName: edge-portal
+      containers:
+        - name: portal
+          image: "{{ .Values.portal.image }}"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: INFERENCE_SERVICE_URL
+              value: "http://inference-service.default.svc.cluster.local:8000"
+          ports:
+            - containerPort: 8000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: edge-portal
+  namespace: default
+spec:
+  selector:
+    app: edge-portal
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8000

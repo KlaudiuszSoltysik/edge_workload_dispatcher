@@ -3,9 +3,10 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from . import k8s
+from .config import BASE_DIR
 
 router = APIRouter(tags=["chat"])
-templates = Jinja2Templates(directory="services/portal/src/templates")
+templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 
 @router.get("/chat", response_class=HTMLResponse)

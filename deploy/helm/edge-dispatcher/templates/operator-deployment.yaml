@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: edge-operator
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: edge-operator
+  template:
+    metadata:
+      labels:
+        app: edge-operator
+    spec:
+      serviceAccountName: edge-operator
+      containers:
+        - name: operator
+          image: "{{ .Values.operator.image }}"
+          imagePullPolicy: IfNotPresent
+          command: ["kopf", "run", "/app/src/main.py", "--all-namespaces"]
+          volumeMounts:
+            - name: model-storage
+              mountPath: /opt/models
+              readOnly: true
+      volumes:
+        - name: model-storage
+          hostPath:
+            path: /opt/models
+            type: DirectoryOrCreate

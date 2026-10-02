@@ -1,0 +1,5 @@
+operator:
+  image: edge-operator:latest
+
+portal:
+  image: edge-portal:latest
