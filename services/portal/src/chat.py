@@ -19,10 +19,9 @@ async def chat_page(request: Request):
 async def handle_prompt(
     request: Request, task_type: str = Form(...), prompt: str = Form(...)
 ):
-    result = k8s.submit_and_wait_for_task(task_type, prompt)
-
+    result = k8s.execute_inference(task_type, prompt)
     return templates.TemplateResponse(
         request=request,
         name="chat.html",
-        context={"request": request, "result": result, "last_prompt": prompt},
+        context={"result": result, "last_prompt": prompt},
     )

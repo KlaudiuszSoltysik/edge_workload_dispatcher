@@ -1,9 +1,8 @@
-import time
-import uuid
+import json
+import urllib.request
 
 import kubernetes
 from kubernetes import client
-from kubernetes.client.rest import ApiException
 
 kubernetes.config.load_kube_config()
 core_api = client.CoreV1Api()
@@ -11,9 +10,12 @@ custom_api = client.CustomObjectsApi()
 
 GROUP = "edge.platform"
 VERSION = "v1"
-PLURAL = "computetasks"
-BATCH_PLURAL = "batchtasks"
+PLURAL = "workspaces"
 NAMESPACE = "default"
+
+
+# INFERENCE_SERVICE_URL = "http://inference-service.default.svc.cluster.local:8000"
+INFERENCE_SERVICE_URL = "http://127.0.0.1:8001"
 
 
 def get_available_hardware():
@@ -48,7 +50,7 @@ def get_all_tasks():
 def create_task(gpu_model: str, gpu_count: int, disk_gb: int, image: str):
     task_body = {
         "apiVersion": f"{GROUP}/{VERSION}",
-        "kind": "ComputeTask",
+        "kind": "Workspace",
         "metadata": {"generateName": "client-task-"},
         "spec": {
             "gpuModel": gpu_model,
@@ -76,55 +78,18 @@ def delete_task(task_name: str):
     )
 
 
-def submit_and_wait_for_task(
-    task_type: str, prompt: str, timeout_seconds: int = 15
-) -> str:
-    custom_api = client.CustomObjectsApi()
-    task_name = f"api-task-{uuid.uuid4().hex[:8]}"
-
-    manifest = {
-        "apiVersion": f"{GROUP}/{VERSION}",
-        "kind": "BatchTask",
-        "metadata": {"name": task_name, "namespace": NAMESPACE},
-        "spec": {"task_type": task_type, "prompt": prompt},
-    }
+def execute_inference(task_type: str, prompt: str, timeout: int = 5) -> str:
+    payload = json.dumps({"task_type": task_type, "prompt": prompt}).encode("utf-8")
+    req = urllib.request.Request(
+        f"{INFERENCE_SERVICE_URL}",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
 
     try:
-        custom_api.create_namespaced_custom_object(
-            group=GROUP,
-            version=VERSION,
-            namespace=NAMESPACE,
-            plural=BATCH_PLURAL,
-            body=manifest,
-        )
-    except ApiException as err:
-        return f"Failed to create task: {err}"
-
-    start_time = time.time()
-    while time.time() - start_time < timeout_seconds:
-        try:
-            task = custom_api.get_namespaced_custom_object(
-                group=GROUP,
-                version=VERSION,
-                namespace=NAMESPACE,
-                plural=BATCH_PLURAL,
-                name=task_name,
-            )
-
-            status = task.get("status", {}) # type: ignore
-            if "result" in status: # type: ignore
-                custom_api.delete_namespaced_custom_object(
-                    group=GROUP,
-                    version=VERSION,
-                    namespace=NAMESPACE,
-                    plural=BATCH_PLURAL,
-                    name=task_name,
-                )
-                return status["result"] # type: ignore
-
-        except ApiException:
-            pass
-
-        time.sleep(1)
-
-    return "Timeout: Node is busy or task took too long."
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            data = json.loads(response.read().decode("utf-8"))
+            return data.get("result", "Empty response")
+    except Exception as err:  # noqa: BLE001
+        return f"Inference worker unavailable: {err}"

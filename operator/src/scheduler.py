@@ -40,3 +40,20 @@ def release_gpu_on_node(
     patch_body = {"metadata": {"labels": {"gpu-free": str(new_free)}}}
 
     api.patch_node(node_name, patch_body)
+
+
+def get_available_gpus_map(core_api: client.CoreV1Api) -> dict:
+    available_gpus = {}
+    nodes = core_api.list_node()
+
+    for node in nodes.items:  # type: ignore
+        if node.spec.unschedulable:
+            continue
+
+        labels = node.metadata.labels or {}
+        free_count = int(labels.get("gpu-free", 0))
+
+        if free_count > 0:
+            available_gpus[node.metadata.name] = free_count
+
+    return available_gpus

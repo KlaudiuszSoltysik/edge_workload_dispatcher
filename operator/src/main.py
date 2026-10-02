@@ -2,11 +2,16 @@ import kopf
 import kubernetes
 from kubernetes import client
 from kubernetes.client.rest import ApiException
-from scheduler import allocate_gpu_on_node, find_available_node, release_gpu_on_node
+from scheduler import (
+    allocate_gpu_on_node,
+    find_available_node,
+    get_available_gpus_map,
+    release_gpu_on_node,
+)
 
 GROUP = "edge.platform"
 VERSION = "v1"
-PLURAL = "computetasks"
+PLURAL = "workspaces"
 SPECS_MAPPING = {"rtx-3060": {"cpu": 0.1, "ram": 0.1}, "l40s": {"cpu": 0.2, "ram": 0.2}}
 
 
@@ -255,7 +260,7 @@ def sync_pod_status(event, body, logger, **kwargs):
 
     task_name = None
     for ref in owner_references:
-        if ref.get("kind") == "ComputeTask":
+        if ref.get("kind") == "Workspace":
             task_name = ref.get("name")
             break
 
@@ -292,113 +297,132 @@ def sync_pod_status(event, body, logger, **kwargs):
             logger.error(f"Failed to sync status for {task_name}: {err}")
 
 
-@kopf.on.create(GROUP, VERSION, "batchtasks")
-def create_batch_task(spec, name, namespace, logger, **kwargs):
+RUNNER_SCRIPT = """
+import http.server
+import json
+import subprocess
+
+class InferenceHandler(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        content_length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(content_length).decode('utf-8')
+        data = json.loads(body) if body else {}
+
+        task_type = data.get('task_type', 'llm')
+        prompt = data.get('prompt', '')
+        script_path = f"/opt/models/{task_type}_model.sh"
+
+        try:
+            cmd = ["/bin/bash", script_path, prompt]
+            proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            output = proc.stdout.strip()
+        except subprocess.CalledProcessError as err:
+            output = f"Execution failed: {err.stderr}"
+
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        response = json.dumps({'result': output})
+        self.wfile.write(response.encode('utf-8'))
+
+if __name__ == '__main__':
+    server = http.server.HTTPServer(('0.0.0.0', 8000), InferenceHandler)
+    server.serve_forever()
+"""
+
+
+@kopf.timer("", VERSION, "nodes", interval=5.0)
+def reconcile_inference_workers(logger, **kwargs):
     core_api = client.CoreV1Api()
+    available_gpus = get_available_gpus_map(core_api)
 
-    task_type = spec["task_type"]
-    prompt = spec["prompt"]
+    pods = core_api.list_namespaced_pod(
+        namespace="default", label_selector="role=inference-worker"
+    )
 
-    # TODO: Fix later
-    target_node = find_available_node(core_api, gpu_model="rtx-3060", gpu_count=1)
-    if not target_node:
-        raise kopf.TemporaryError("No GPUs available. Batch task queued.", delay=5)
+    node_workers = {}
+    for pod in pods.items:  # type: ignore
+        if pod.metadata.deletion_timestamp:
+            continue
+        node = pod.metadata.labels.get("node")
+        if node:
+            node_workers.setdefault(node, []).append(pod.metadata.name)
 
-    model_script = f"/opt/models/{task_type}_model.sh"
+    nodes = core_api.list_node()
+    for node in nodes.items:  # type: ignore
+        node_name = node.metadata.name
+        free_count = available_gpus.get(node_name, 0)
+        current_pods = node_workers.get(node_name, [])
 
-    execution_command = f"{model_script} '{prompt}' | tee /dev/termination-log"
+        if len(current_pods) > free_count:
+            excess = len(current_pods) - free_count
+            for i in range(excess):
+                pod_to_delete = current_pods.pop()
+                try:
+                    core_api.delete_namespaced_pod(
+                        name=pod_to_delete,
+                        namespace="default",
+                        body=client.V1DeleteOptions(grace_period_seconds=0),
+                    )
+                    logger.info(
+                        f"Evicted worker {pod_to_delete} (GPU preempted on {node_name})"
+                    )
+                except ApiException as err:
+                    if err.status != 404:
+                        logger.error(f"Failed to delete worker {pod_to_delete}: {err}")
 
-    pod_manifest = {
-        "apiVersion": "v1",
-        "kind": "Pod",
-        "metadata": {
-            "name": f"{name}-runner",
-            "labels": {"batch-task-name": name, "role": "batch-worker"},
-        },
-        "spec": {
-            "priorityClassName": "batch-priority",
-            "restartPolicy": "Never",
-            "nodeSelector": {"kubernetes.io/hostname": target_node},
-            "containers": [
-                {
-                    "name": "runner",
-                    "image": "ubuntu:latest",
-                    "command": ["/bin/bash", "-c", execution_command],
-                    "volumeMounts": [
-                        {
-                            "name": "model-storage",
-                            "mountPath": "/opt/models",
-                            "readOnly": True,
+        elif len(current_pods) < free_count:
+            for i in range(len(current_pods), free_count):
+                pod_name = f"inference-worker-{node_name}-{i}"
+                if pod_name in current_pods:
+                    continue
+
+                pod_manifest = {
+                    "apiVersion": VERSION,
+                    "kind": "Pod",
+                    "metadata": {
+                        "name": pod_name,
+                        "labels": {
+                            "role": "inference-worker",
+                            "node": node_name,
                         },
-                    ],
+                    },
+                    "spec": {
+                        "priorityClassName": "batch-priority",
+                        "restartPolicy": "Always",
+                        "nodeSelector": {"kubernetes.io/hostname": node_name},
+                        "containers": [
+                            {
+                                "name": "inference-daemon",
+                                "image": "python:3.11-slim",
+                                "command": ["python3", "-c", RUNNER_SCRIPT],
+                                "ports": [{"containerPort": 8000}],
+                                "volumeMounts": [
+                                    {
+                                        "name": "model-storage",
+                                        "mountPath": "/opt/models",
+                                        "readOnly": True,
+                                    },
+                                ],
+                            }
+                        ],
+                        "volumes": [
+                            {
+                                "name": "model-storage",
+                                "hostPath": {
+                                    "path": "/opt/models",
+                                    "type": "Directory",
+                                },
+                            }
+                        ],
+                    },
                 }
-            ],
-            "volumes": [
-                {
-                    "name": "model-storage",
-                    "hostPath": {"path": "/opt/models", "type": "Directory"},
-                }
-            ],
-        },
-    }
 
-    kopf.adopt(pod_manifest)
-    core_api.create_namespaced_pod(namespace=namespace, body=pod_manifest)
-
-    return {"status": "Pending", "allocatedNode": target_node}
-
-
-@kopf.on.event("", "v1", "pods", labels={"role": "batch-worker"})
-def capture_batch_result(event, body, logger, **kwargs):
-    status = body.get("status", {})
-    phase = status.get("phase")
-
-    if phase not in ["Succeeded", "Failed"]:
-        return
-
-    pod_name = body["metadata"]["name"]
-    namespace = body["metadata"]["namespace"]
-    task_name = body["metadata"]["labels"].get("batch-task-name")
-
-    if not task_name:
-        return
-
-    core_api = client.CoreV1Api()
-    custom_api = client.CustomObjectsApi()
-
-    result_text = "No output produced"
-    container_statuses = status.get("containerStatuses", [])
-    if container_statuses:
-        terminated_state = container_statuses[0].get("state", {}).get("terminated", {})
-        result_text = terminated_state.get("message", "Completed with empty message")
-
-    status_patch = {
-        "status": {
-            "phase": phase,
-            "result": result_text.strip(),
-        }
-    }
-
-    try:
-        custom_api.patch_namespaced_custom_object_status(
-            group=GROUP,
-            version=VERSION,
-            namespace=namespace,
-            plural="batchtasks",
-            name=task_name,
-            body=status_patch,
-        )
-        logger.info(f"Updated BatchTask {task_name} with status {phase}")
-    except ApiException as err:
-        logger.error(f"Failed to patch BatchTask status: {err}")
-
-    try:
-        core_api.delete_namespaced_pod(
-            name=pod_name,
-            namespace=namespace,
-            body=client.V1DeleteOptions(grace_period_seconds=0),
-        )
-        logger.info(f"Purged runner pod {pod_name} immediately after execution")
-    except ApiException as err:
-        if err.status != 404:
-            logger.error(f"Failed to delete runner pod: {err}")
+                try:
+                    core_api.create_namespaced_pod(
+                        namespace="default", body=pod_manifest
+                    )
+                    logger.info(f"Created worker {pod_name} on {node_name}")
+                except ApiException as err:
+                    if err.status != 409:
+                        logger.error(f"Failed to create {pod_name}: {err}")
