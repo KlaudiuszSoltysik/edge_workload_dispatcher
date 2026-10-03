@@ -1,0 +1,6 @@
+- Dystrybucja modeli (Storage)
+- Observability (Monitoring Puli GPU)
+- Migracja na K3s i prawdziwy multinode
+- Prawdziwy scheduling
+- Izolacja sieciowa z CNI Cilium
+- Find better way to distribute RUNNER_SCRIPT

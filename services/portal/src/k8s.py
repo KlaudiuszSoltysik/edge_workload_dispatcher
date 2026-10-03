@@ -1,4 +1,5 @@
 import json
+import os
 import urllib.request
 
 from kubernetes import client, config
@@ -18,8 +19,10 @@ PLURAL = "workspaces"
 NAMESPACE = "default"
 
 
-# INFERENCE_SERVICE_URL = "http://inference-service.default.svc.cluster.local:8000"
-INFERENCE_SERVICE_URL = "http://127.0.0.1:8001"
+INFERENCE_SERVICE_URL = os.getenv(
+    "INFERENCE_SERVICE_URL", 
+    "http://127.0.0.1:8001"
+)
 
 
 def get_available_hardware():

@@ -11,11 +11,7 @@ uvicorn services.portal.src.main:app --reload
 
 kubectl port-forward svc/inference-service 8001:8000
 
-kubectl apply -f operator/crd.yaml
 kubectl label node edge-workload-dispatcher-worker2 gpu-free=4 --overwrite
-
-docker stop
-docker start
 
 # Zbuduj obrazy
 docker build -t edge-operator:latest operator/
@@ -28,3 +24,5 @@ kind load docker-image edge-portal:latest --name edge-workload-dispatcher
 helm upgrade --install edge-dispatcher ./deploy/helm/edge-dispatcher
 
 kubectl port-forward svc/edge-portal 8080:80
+
+docker start edge-workload-dispatcher-control-plane edge-workload-dispatcher-worker edge-workload-dispatcher-worker2 edge-workload-dispatcher-worker3 edge-workload-dispatcher-worker4 edge-workload-dispatcher-worker5 

@@ -1,7 +1,7 @@
 import kopf
-import kubernetes
-from kubernetes import client
+from kubernetes import client, config
 from kubernetes.client.rest import ApiException
+from kubernetes.config.config_exception import ConfigException
 from scheduler import (
     allocate_gpu_on_node,
     find_available_node,
@@ -17,7 +17,10 @@ SPECS_MAPPING = {"rtx-3060": {"cpu": 0.1, "ram": 0.1}, "l40s": {"cpu": 0.2, "ram
 
 @kopf.on.startup()
 def configure(settings: kopf.OperatorSettings, **_):
-    kubernetes.config.load_kube_config()
+    try:
+        config.load_incluster_config()
+    except ConfigException:
+        config.load_kube_config()
 
 
 # TODO: Add logging
