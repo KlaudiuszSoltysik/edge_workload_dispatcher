@@ -7,7 +7,7 @@ __pycache__/
 *.tfstate
 *.tfstate.backup
 *.terraform.lock.hcl
-infrastructure/*-config
+infrastructure/terraform/*-config
 
 .idea/
 .vscode/

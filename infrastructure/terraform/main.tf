@@ -71,20 +71,6 @@ resource "kind_cluster" "dispatcher_cluster" {
     node {
       role = "worker"
       labels = {
-        "size"      = "S"
-        "gpu-model" = "l40s"
-        "gpu-total" = "4"
-        "gpu-free"  = "4"
-      }
-      extra_mounts {
-        host_path      = "./models"
-        container_path = "/opt/models"
-      }
-    }
-
-    node {
-      role = "worker"
-      labels = {
         "size"      = "M"
         "gpu-model" = "l40s"
         "gpu-total" = "8"
