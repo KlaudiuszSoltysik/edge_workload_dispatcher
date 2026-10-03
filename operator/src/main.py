@@ -72,6 +72,17 @@ def create_task(spec, name, namespace, logger, **kwargs):
             "priorityClassName": "vip-provisioning",
             "automountServiceAccountToken": False,
             "nodeSelector": {"kubernetes.io/hostname": target_node},
+            "initContainers": [
+                {
+                    "name": "model-loader",
+                    "image": "edge-models:latest",
+                    "imagePullPolicy": "IfNotPresent",
+                    "command": ["sh", "-c", "cp -a /models/. /opt/models/"],
+                    "volumeMounts": [
+                        {"name": "model-storage", "mountPath": "/opt/models"}
+                    ],
+                }
+            ],
             "containers": [
                 {
                     "name": "workspace",
@@ -124,10 +135,7 @@ def create_task(spec, name, namespace, logger, **kwargs):
                 },
                 {
                     "name": "model-storage",
-                    "hostPath": {
-                        "path": "/opt/models",
-                        "type": "DirectoryOrCreate",
-                    },
+                    "emptyDir": {},
                 },
             ],
         },
@@ -300,40 +308,6 @@ def sync_pod_status(event, body, logger, **kwargs):
             logger.error(f"Failed to sync status for {task_name}: {err}")
 
 
-RUNNER_SCRIPT = """
-import http.server
-import json
-import subprocess
-
-class InferenceHandler(http.server.BaseHTTPRequestHandler):
-    def do_POST(self):
-        content_length = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(content_length).decode('utf-8')
-        data = json.loads(body) if body else {}
-
-        task_type = data.get('task_type', 'llm')
-        prompt = data.get('prompt', '')
-        script_path = f"/opt/models/{task_type}_model.sh"
-
-        try:
-            cmd = ["/bin/bash", script_path, prompt]
-            proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
-            output = proc.stdout.strip()
-        except subprocess.CalledProcessError as err:
-            output = f"Execution failed: {err.stderr}"
-
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
-        self.end_headers()
-        response = json.dumps({'result': output})
-        self.wfile.write(response.encode('utf-8'))
-
-if __name__ == '__main__':
-    server = http.server.HTTPServer(('0.0.0.0', 8000), InferenceHandler)
-    server.serve_forever()
-"""
-
-
 @kopf.timer("", VERSION, "nodes", interval=5.0)
 def reconcile_inference_workers(logger, **kwargs):
     core_api = client.CoreV1Api()
@@ -394,16 +368,35 @@ def reconcile_inference_workers(logger, **kwargs):
                         "priorityClassName": "batch-priority",
                         "restartPolicy": "Always",
                         "nodeSelector": {"kubernetes.io/hostname": node_name},
+                        "initContainers": [
+                            {
+                                "name": "model-loader",
+                                "image": "edge-models:latest",
+                                "imagePullPolicy": "IfNotPresent",
+                                "command": ["sh", "-c", "cp -a /models/. /opt/models/"],
+                                "volumeMounts": [
+                                    {
+                                        "name": "model-storage",
+                                        "mountPath": "/opt/models",
+                                    }
+                                ],
+                            }
+                        ],
                         "containers": [
                             {
                                 "name": "inference-daemon",
                                 "image": "python:3.11-slim",
-                                "command": ["python3", "-c", RUNNER_SCRIPT],
+                                "command": ["python3", "/scripts/runner.py"],
                                 "ports": [{"containerPort": 8000}],
                                 "volumeMounts": [
                                     {
                                         "name": "model-storage",
                                         "mountPath": "/opt/models",
+                                        "readOnly": True,
+                                    },
+                                    {
+                                        "name": "runner-script-vol",
+                                        "mountPath": "/scripts",
                                         "readOnly": True,
                                     },
                                 ],
@@ -412,11 +405,12 @@ def reconcile_inference_workers(logger, **kwargs):
                         "volumes": [
                             {
                                 "name": "model-storage",
-                                "hostPath": {
-                                    "path": "/opt/models",
-                                    "type": "Directory",
-                                },
-                            }
+                                "emptyDir": {},
+                            },
+                            {
+                                "name": "runner-script-vol",
+                                "configMap": {"name": "inference-runner-script"},
+                            },
                         ],
                     },
                 }
