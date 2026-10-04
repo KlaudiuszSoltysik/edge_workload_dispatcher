@@ -1,5 +1,2 @@
-- Observability
 - Prawdziwy scheduling
-- Izolacja sieciowa z CNI Cilium
-- kubectl port-forward svc/edge-portal 8080:80
 - GitOps

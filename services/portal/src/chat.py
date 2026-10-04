@@ -3,7 +3,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from . import k8s
-from .config import BASE_DIR
+from .config import BASE_DIR, INFERENCE_REQUESTS_RECEIVED
 
 router = APIRouter(tags=["chat"])
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -20,7 +20,10 @@ async def chat_page(request: Request):
 async def handle_prompt(
     request: Request, task_type: str = Form(...), prompt: str = Form(...)
 ):
+    INFERENCE_REQUESTS_RECEIVED.inc()
+
     result = k8s.execute_inference(task_type, prompt)
+
     return templates.TemplateResponse(
         request=request,
         name="chat.html",

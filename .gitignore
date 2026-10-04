@@ -7,7 +7,7 @@ __pycache__/
 *.tfstate
 *.tfstate.backup
 *.terraform.lock.hcl
-infrastructure/terraform/*-config
+infrastructure/terraform/edge-workload-dispatcher-config
 
 .idea/
 .vscode/

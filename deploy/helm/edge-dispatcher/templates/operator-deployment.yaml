@@ -14,17 +14,18 @@ spec:
         app: edge-operator
     spec:
       serviceAccountName: edge-operator
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
       containers:
         - name: operator
           image: "{{ .Values.operator.image }}"
           imagePullPolicy: IfNotPresent
           command: ["kopf", "run", "/app/src/main.py", "--all-namespaces"]
-          volumeMounts:
-            - name: model-storage
-              mountPath: /opt/models
-              readOnly: true
-      volumes:
-        - name: model-storage
-          hostPath:
-            path: /opt/models
-            type: DirectoryOrCreate
+          ports:
+            - containerPort: 8000
+              name: metrics
+

@@ -1,0 +1,15 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: edge-portal
+  labels:
+    app: edge-portal
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: edge-portal
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 10s

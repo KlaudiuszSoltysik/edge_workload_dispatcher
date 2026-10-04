@@ -5,6 +5,8 @@ import urllib.request
 from kubernetes import client, config
 from kubernetes.config.config_exception import ConfigException
 
+from .config import INFERENCE_REQUESTS_ASSIGNED, INFERENCE_REQUESTS_COMPLETED
+
 try:
     config.load_incluster_config()
 except ConfigException:
@@ -94,9 +96,14 @@ def execute_inference(task_type: str, prompt: str, timeout: int = 5) -> str:
         method="POST",
     )
 
+    INFERENCE_REQUESTS_ASSIGNED.inc()
+
     try:
         with urllib.request.urlopen(req, timeout=timeout) as response:
             data = json.loads(response.read().decode("utf-8"))
+            
+            INFERENCE_REQUESTS_COMPLETED.inc()
+            
             return data.get("result", "Empty response")
     except Exception as err:  # noqa: BLE001
         return f"Inference worker unavailable: {err}"

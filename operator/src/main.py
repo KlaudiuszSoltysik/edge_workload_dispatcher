@@ -1,7 +1,11 @@
+import threading
+import time
+
 import kopf
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 from kubernetes.config.config_exception import ConfigException
+from prometheus_client import Gauge, start_http_server
 from scheduler import (
     allocate_gpu_on_node,
     find_available_node,
@@ -14,6 +18,26 @@ VERSION = "v1"
 PLURAL = "workspaces"
 SPECS_MAPPING = {"rtx-3060": {"cpu": 0.1, "ram": 0.1}, "l40s": {"cpu": 0.2, "ram": 0.2}}
 
+NODE_GPU_FREE = Gauge(
+    "edge_node_gpu_free", "Number of free GPUs on a node", ["node_name"]
+)
+
+
+def background_metrics_loop():
+    core_api = client.CoreV1Api()
+
+    while True:
+        try:
+            nodes = core_api.list_node()
+            for node in nodes.items:  # type: ignore
+                gpu_free = int(node.metadata.labels.get("gpu-free", 0))
+                NODE_GPU_FREE.labels(node_name=node.metadata.name).set(gpu_free)
+
+        except Exception as err:  # noqa: BLE001
+            print(f"Error updating metrics: {err}")
+
+        time.sleep(10)
+
 
 @kopf.on.startup()
 def configure(settings: kopf.OperatorSettings, **_):
@@ -21,6 +45,10 @@ def configure(settings: kopf.OperatorSettings, **_):
         config.load_incluster_config()
     except ConfigException:
         config.load_kube_config()
+
+    threading.Thread(target=start_http_server, args=(8000,), daemon=True).start()
+
+    threading.Thread(target=background_metrics_loop, daemon=True).start()
 
 
 # TODO: Add logging
