@@ -7,16 +7,19 @@ data:
   runner.py: |
     import http.server
     import json
+    import signal
     import subprocess
+    import sys
+    import threading
 
     class InferenceHandler(http.server.BaseHTTPRequestHandler):
         def do_POST(self):
-            content_length = int(self.headers.get('Content-Length', 0))
-            body = self.rfile.read(content_length).decode('utf-8')
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length).decode("utf-8")
             data = json.loads(body) if body else {}
 
-            task_type = data.get('task_type', 'llm')
-            prompt = data.get('prompt', '')
+            task_type = data.get("task_type", "llm")
+            prompt = data.get("prompt", "")
             script_path = f"/opt/models/{task_type}_model.sh"
 
             try:
@@ -25,13 +28,30 @@ data:
                 output = proc.stdout.strip()
             except subprocess.CalledProcessError as err:
                 output = f"Execution failed: {err.stderr}"
+            except Exception as err:
+                output = f"Unexpected error: {err}"
 
             self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
+            self.send_header("Content-Type", "application/json")
             self.end_headers()
-            response = json.dumps({'result': output})
-            self.wfile.write(response.encode('utf-8'))
+            response = json.dumps({"result": output})
+            self.wfile.write(response.encode("utf-8"))
 
-    if __name__ == '__main__':
-        server = http.server.HTTPServer(('0.0.0.0', 8000), InferenceHandler)
+        def log_message(self, format, *args):
+            sys.stderr.write(f"[{self.log_date_time_string()}] {format % args}\n")
+
+    if __name__ == "__main__":
+        server = http.server.HTTPServer(("0.0.0.0", 8000), InferenceHandler)
+
+        def shutdown_handler(signum, frame):
+            sys.stderr.write(f"Received signal {signum}, initiating graceful shutdown...\n")
+            threading.Thread(target=server.shutdown, daemon=True).start()
+
+        signal.signal(signal.SIGTERM, shutdown_handler)
+        signal.signal(signal.SIGINT, shutdown_handler)
+
+        sys.stderr.write("Inference runner listening on port 8000...\n")
         server.serve_forever()
+        server.server_close()
+        sys.stderr.write("Inference runner shut down gracefully.\n")
+        sys.exit(0)

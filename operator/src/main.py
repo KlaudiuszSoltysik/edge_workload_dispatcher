@@ -74,6 +74,22 @@ def create_task(spec, name, namespace, logger, **kwargs):
             f"No nodes available for {gpu_count}x {gpu_model}", delay=10
         )
 
+    active_workers = core_api.list_namespaced_pod(
+        namespace="default",
+        label_selector=f"node={target_node}",
+    )
+    terminating_workers = [
+        p
+        for p in active_workers.items  # type: ignore
+        if p.metadata.labels.get("role") in ["inference-worker", "draining"]
+    ]
+
+    if terminating_workers:
+        raise kopf.TemporaryError(
+            f"Node {target_node} is preparing resources (draining workers). Waiting...",
+            delay=3,
+        )
+
     allocate_gpu_on_node(core_api, target_node, gpu_count)
 
     pvc_manifest = {
@@ -364,10 +380,14 @@ def reconcile_inference_workers(logger, **kwargs):
             for i in range(excess):
                 pod_to_delete = current_pods.pop()
                 try:
-                    core_api.delete_namespaced_pod(
+                    core_api.patch_namespaced_pod(
                         name=pod_to_delete,
                         namespace="default",
-                        body=client.V1DeleteOptions(grace_period_seconds=0),
+                        body={"metadata": {"labels": {"role": "draining"}}},
+                    )
+
+                    core_api.delete_namespaced_pod(
+                        name=pod_to_delete, namespace="default"
                     )
                     logger.info(
                         f"Evicted worker {pod_to_delete} (GPU preempted on {node_name})"
