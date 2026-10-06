@@ -1,5 +1,7 @@
+import os
 import threading
 import time
+import urllib.request
 
 import kopf
 from kubernetes import client, config
@@ -20,6 +22,11 @@ SPECS_MAPPING = {"rtx-3060": {"cpu": 0.1, "ram": 0.1}, "l40s": {"cpu": 0.2, "ram
 
 NODE_GPU_FREE = Gauge(
     "edge_node_gpu_free", "Number of free GPUs on a node", ["node_name"]
+)
+
+QUEUE_THRESHOLD = int(os.getenv("QUEUE_THRESHOLD", "5"))
+PORTAL_METRICS_URL = os.getenv(
+    "PORTAL_METRICS_URL", "http://edge-portal.default.svc.cluster.local/metrics"
 )
 
 
@@ -352,10 +359,91 @@ def sync_pod_status(event, body, logger, **kwargs):
             logger.error(f"Failed to sync status for {task_name}: {err}")
 
 
+def get_inference_queue_depth() -> int:
+    try:
+        req = urllib.request.Request(PORTAL_METRICS_URL)
+        with urllib.request.urlopen(req, timeout=1.5) as response:
+            content = response.read().decode("utf-8")
+            received = 0
+            completed = 0
+            for line in content.splitlines():
+                if line.startswith("edge_inference_requests_received_total"):
+                    received = int(float(line.split()[-1]))
+                elif line.startswith("edge_inference_requests_completed_total"):
+                    completed = int(float(line.split()[-1]))
+            return max(0, received - completed)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def create_worker_manifest(node_name: str, pod_name: str) -> dict:
+    return {
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {
+            "name": pod_name,
+            "labels": {
+                "role": "inference-worker",
+                "node": node_name,
+            },
+        },
+        "spec": {
+            "priorityClassName": "batch-priority",
+            "restartPolicy": "Always",
+            "nodeSelector": {"kubernetes.io/hostname": node_name},
+            "initContainers": [
+                {
+                    "name": "model-loader",
+                    "image": "edge-models:latest",
+                    "imagePullPolicy": "IfNotPresent",
+                    "command": ["sh", "-c", "cp -a /models/. /opt/models/"],
+                    "volumeMounts": [
+                        {
+                            "name": "model-storage",
+                            "mountPath": "/opt/models",
+                        }
+                    ],
+                }
+            ],
+            "containers": [
+                {
+                    "name": "inference-daemon",
+                    "image": "python:3.11-slim",
+                    "command": ["python3", "/scripts/runner.py"],
+                    "ports": [{"containerPort": 8000}],
+                    "volumeMounts": [
+                        {
+                            "name": "model-storage",
+                            "mountPath": "/opt/models",
+                            "readOnly": True,
+                        },
+                        {
+                            "name": "runner-script-vol",
+                            "mountPath": "/scripts",
+                            "readOnly": True,
+                        },
+                    ],
+                }
+            ],
+            "volumes": [
+                {
+                    "name": "model-storage",
+                    "emptyDir": {},
+                },
+                {
+                    "name": "runner-script-vol",
+                    "configMap": {"name": "inference-runner-script"},
+                },
+            ],
+        },
+    }
+
+
 @kopf.timer("", VERSION, "nodes", interval=5.0)
 def reconcile_inference_workers(logger, **kwargs):
     core_api = client.CoreV1Api()
     available_gpus = get_available_gpus_map(core_api)
+    queue_depth = get_inference_queue_depth()
 
     pods = core_api.list_namespaced_pod(
         namespace="default", label_selector="role=inference-worker"
@@ -373,11 +461,30 @@ def reconcile_inference_workers(logger, **kwargs):
     for node in nodes.items:  # type: ignore
         node_name = node.metadata.name
         free_count = available_gpus.get(node_name, 0)
+        gpu_total = int(node.metadata.labels.get("gpu-total", 0))
+
+        if gpu_total == 0:
+            continue
+
         current_pods = node_workers.get(node_name, [])
 
-        if len(current_pods) > free_count:
-            excess = len(current_pods) - free_count
-            for i in range(excess):
+        desired_workers = 0
+
+        if free_count > 0:
+            if free_count < gpu_total:
+                desired_workers = free_count
+            else:
+                if queue_depth > QUEUE_THRESHOLD:
+                    logger.info(
+                        f"Queue surge ({queue_depth} > {QUEUE_THRESHOLD}). Spinning up cold workers on {node_name}."
+                    )
+                    desired_workers = free_count
+                else:
+                    desired_workers = 0
+
+        if len(current_pods) > desired_workers:
+            excess = len(current_pods) - desired_workers
+            for _ in range(excess):
                 pod_to_delete = current_pods.pop()
                 try:
                     core_api.patch_namespaced_pod(
@@ -385,89 +492,38 @@ def reconcile_inference_workers(logger, **kwargs):
                         namespace="default",
                         body={"metadata": {"labels": {"role": "draining"}}},
                     )
-
                     core_api.delete_namespaced_pod(
                         name=pod_to_delete, namespace="default"
                     )
                     logger.info(
-                        f"Evicted worker {pod_to_delete} (GPU preempted on {node_name})"
+                        f"Draining worker {pod_to_delete} on {node_name} (Target: {desired_workers}, Active: {len(current_pods)})"
                     )
                 except ApiException as err:
                     if err.status != 404:
-                        logger.error(f"Failed to delete worker {pod_to_delete}: {err}")
+                        logger.error(f"Failed to evict worker {pod_to_delete}: {err}")
 
-        elif len(current_pods) < free_count:
-            for i in range(len(current_pods), free_count):
-                pod_name = f"inference-worker-{node_name}-{i}"
-                if pod_name in current_pods:
+        elif len(current_pods) < desired_workers:
+            existing_names = set(current_pods)
+            needed = desired_workers - len(current_pods)
+            created = 0
+            idx = 0
+
+            while created < needed:
+                pod_name = f"inference-worker-{node_name}-{idx}"
+                idx += 1
+                if pod_name in existing_names:
                     continue
 
-                pod_manifest = {
-                    "apiVersion": VERSION,
-                    "kind": "Pod",
-                    "metadata": {
-                        "name": pod_name,
-                        "labels": {
-                            "role": "inference-worker",
-                            "node": node_name,
-                        },
-                    },
-                    "spec": {
-                        "priorityClassName": "batch-priority",
-                        "restartPolicy": "Always",
-                        "nodeSelector": {"kubernetes.io/hostname": node_name},
-                        "initContainers": [
-                            {
-                                "name": "model-loader",
-                                "image": "edge-models:latest",
-                                "imagePullPolicy": "IfNotPresent",
-                                "command": ["sh", "-c", "cp -a /models/. /opt/models/"],
-                                "volumeMounts": [
-                                    {
-                                        "name": "model-storage",
-                                        "mountPath": "/opt/models",
-                                    }
-                                ],
-                            }
-                        ],
-                        "containers": [
-                            {
-                                "name": "inference-daemon",
-                                "image": "python:3.11-slim",
-                                "command": ["python3", "/scripts/runner.py"],
-                                "ports": [{"containerPort": 8000}],
-                                "volumeMounts": [
-                                    {
-                                        "name": "model-storage",
-                                        "mountPath": "/opt/models",
-                                        "readOnly": True,
-                                    },
-                                    {
-                                        "name": "runner-script-vol",
-                                        "mountPath": "/scripts",
-                                        "readOnly": True,
-                                    },
-                                ],
-                            }
-                        ],
-                        "volumes": [
-                            {
-                                "name": "model-storage",
-                                "emptyDir": {},
-                            },
-                            {
-                                "name": "runner-script-vol",
-                                "configMap": {"name": "inference-runner-script"},
-                            },
-                        ],
-                    },
-                }
-
+                pod_manifest = create_worker_manifest(node_name, pod_name)
                 try:
                     core_api.create_namespaced_pod(
                         namespace="default", body=pod_manifest
                     )
-                    logger.info(f"Created worker {pod_name} on {node_name}")
+                    logger.info(
+                        f"Provisioned inference worker {pod_name} on {node_name}"
+                    )
+                    existing_names.add(pod_name)
+                    created += 1
                 except ApiException as err:
                     if err.status != 409:
                         logger.error(f"Failed to create {pod_name}: {err}")

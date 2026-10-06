@@ -1,2 +1,1 @@
-- Prawdziwy scheduling
 - GitOps

@@ -2,20 +2,39 @@ from kubernetes import client
 
 
 def find_available_node(
-    api: client.CoreV1Api, gpu_model: str, gpu_count: int
+    core_api: client.CoreV1Api, gpu_model: str, required_gpus: int
 ) -> str | None:
-    nodes = api.list_node().items  # type: ignore
+    nodes = core_api.list_node().items  # type: ignore
+    eligible_nodes = []
 
     for node in nodes:  # type: ignore
         labels = node.metadata.labels
+        node_gpu_model = labels.get("gpu-model")
+        gpu_total = int(labels.get("gpu-total", 0))
+        gpu_free = int(labels.get("gpu-free", 0))
 
-        if labels.get("gpu-model") == gpu_model:
-            free_gpus = int(labels["gpu-free"])
+        if node_gpu_model != gpu_model:
+            continue
+        if gpu_free < required_gpus:
+            continue
 
-            if free_gpus >= gpu_count:
-                return node.metadata.name
+        allocated_gpus = gpu_total - gpu_free
+        utilization_score = allocated_gpus / gpu_total if gpu_total > 0 else 0.0
 
-    return None
+        eligible_nodes.append({
+            "name": node.metadata.name,
+            "score": utilization_score,
+            "gpu_free": gpu_free,
+        })
+
+    if not eligible_nodes:
+        return None
+
+    eligible_nodes.sort(
+        key=lambda item: (item["score"], -item["gpu_free"]), reverse=True
+    )
+
+    return eligible_nodes[0]["name"]
 
 
 def allocate_gpu_on_node(
