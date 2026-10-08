@@ -5,7 +5,6 @@ terraform {
     }
     helm = {
       source  = "hashicorp/helm"
-      # version = "~> 2.13"
     }
   }
 }
@@ -109,7 +108,6 @@ resource "helm_release" "ingress_nginx" {
   name             = "ingress-nginx"
   repository       = "https://kubernetes.github.io/ingress-nginx"
   chart            = "ingress-nginx"
-  # version          = "4.10.1"
   namespace        = "ingress-nginx"
   create_namespace = true
 
@@ -157,7 +155,7 @@ resource "helm_release" "prometheus_stack" {
   namespace        = "monitoring"
   create_namespace = true
 
-  timeout = 900 
+  timeout = 9999 
 
   depends_on = [helm_release.ingress_nginx]
 
@@ -187,7 +185,7 @@ resource "helm_release" "loki" {
   namespace        = "monitoring"
   create_namespace = true
 
-  timeout = 900 
+  timeout = 9999
 
   depends_on = [helm_release.prometheus_stack]
 
@@ -226,6 +224,8 @@ resource "helm_release" "alloy" {
   chart            = "alloy"
   namespace        = "monitoring"
   create_namespace = true
+
+  timeout = 9999
 
   depends_on = [helm_release.loki]
 
