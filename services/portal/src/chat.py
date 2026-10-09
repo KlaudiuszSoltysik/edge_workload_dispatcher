@@ -22,7 +22,7 @@ async def handle_prompt(
 ):
     INFERENCE_REQUESTS_RECEIVED.inc()
 
-    result = k8s.execute_inference(task_type, prompt)
+    result = await k8s.execute_inference(task_type, prompt)
 
     return templates.TemplateResponse(
         request=request,

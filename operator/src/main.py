@@ -81,6 +81,9 @@ def create_task(spec, name, namespace, logger, **kwargs):
             f"No nodes available for {gpu_count}x {gpu_model}", delay=10
         )
 
+    target_node_obj = core_api.read_node(target_node)
+    current_free_gpus = int(target_node_obj.metadata.labels.get("gpu-free", 0))  # type: ignore
+
     active_workers = core_api.list_namespaced_pod(
         namespace="default",
         label_selector=f"node={target_node}",
@@ -89,30 +92,34 @@ def create_task(spec, name, namespace, logger, **kwargs):
     inference_workers = [
         p
         for p in active_workers.items  # type: ignore
-        if p.metadata.labels.get("role") in ["inference-worker", "draining"]
+        if p.metadata.labels.get("role") == "inference-worker"
     ]
 
-    if inference_workers:
-        for p in inference_workers:
-            if p.metadata.labels.get("role") == "inference-worker":
-                try:
-                    core_api.patch_namespaced_pod(
-                        name=p.metadata.name,
-                        namespace="default",
-                        body={"metadata": {"labels": {"role": "draining"}}},
-                    )
-                    core_api.delete_namespaced_pod(
-                        name=p.metadata.name, namespace="default"
-                    )
-                    logger.info(
-                        f"Evicting inference worker {p.metadata.name} on {target_node} for VIP task {name}"
-                    )
-                except ApiException as err:
-                    if err.status != 404:
-                        logger.error(f"Failed to evict worker {p.metadata.name}: {err}")
+    desired_max_workers = max(0, current_free_gpus - gpu_count)
+
+    if len(inference_workers) > desired_max_workers:
+        num_to_evict = len(inference_workers) - desired_max_workers
+        workers_to_evict = inference_workers[:num_to_evict]
+
+        for p in workers_to_evict:
+            try:
+                core_api.patch_namespaced_pod(
+                    name=p.metadata.name,
+                    namespace="default",
+                    body={"metadata": {"labels": {"role": "draining"}}},
+                )
+                core_api.delete_namespaced_pod(
+                    name=p.metadata.name, namespace="default"
+                )
+                logger.info(
+                    f"Evicting {p.metadata.name} on {target_node} (draining {num_to_evict} required worker(s) for VIP task {name})"
+                )
+            except ApiException as err:
+                if err.status != 404:
+                    logger.error(f"Failed to evict worker {p.metadata.name}: {err}")
 
         raise kopf.TemporaryError(
-            f"Node {target_node} is preparing resources (draining workers). Waiting...",
+            f"Node {target_node} is preparing resources (draining {num_to_evict} worker(s)). Waiting...",
             delay=3,
         )
 
@@ -477,30 +484,56 @@ def reconcile_inference_workers(logger, **kwargs):
         if node:
             node_workers.setdefault(node, []).append(pod.metadata.name)
 
-    nodes = core_api.list_node()
-    for node in nodes.items:  # type: ignore
+    nodes = core_api.list_node().items  # type: ignore
+
+    warm_nodes = []
+    cold_nodes = []
+    desired_map = {}
+
+    for node in nodes:  # type: ignore
         node_name = node.metadata.name
-        free_count = available_gpus.get(node_name, 0)
         gpu_total = int(node.metadata.labels.get("gpu-total", 0))
 
         if gpu_total == 0:
             continue
 
+        free_count = available_gpus.get(node_name, 0)
+        if free_count == 0:
+            desired_map[node_name] = 0
+            continue
+
+        if free_count < gpu_total:
+            warm_nodes.append((node_name, free_count, gpu_total))
+        else:
+            cold_nodes.append((node_name, free_count, gpu_total))
+
+    warm_capacity = 0
+    for node_name, free_count, _ in warm_nodes:
+        desired_map[node_name] = free_count
+        warm_capacity += free_count
+
+    remaining_queue = max(0, queue_depth - warm_capacity)
+
+    cold_nodes.sort(key=lambda x: x[2])
+
+    for node_name, free_count, gpu_total in cold_nodes:
+        if remaining_queue > QUEUE_THRESHOLD:
+            allocated = min(remaining_queue, free_count)
+            desired_map[node_name] = allocated
+            remaining_queue -= allocated
+            logger.info(
+                f"Waking cold node {node_name} (gpu-total: {gpu_total}) with {allocated} worker(s). Remaining queue: {remaining_queue}"
+            )
+        else:
+            desired_map[node_name] = 0
+
+    for node in nodes:  # type: ignore
+        node_name = node.metadata.name
+        if node_name not in desired_map:
+            continue
+
+        desired_workers = desired_map[node_name]
         current_pods = node_workers.get(node_name, [])
-
-        desired_workers = 0
-
-        if free_count > 0:
-            if free_count < gpu_total:
-                desired_workers = free_count
-            else:
-                if queue_depth > QUEUE_THRESHOLD:
-                    logger.info(
-                        f"Queue surge ({queue_depth} > {QUEUE_THRESHOLD}). Spinning up cold workers on {node_name}."
-                    )
-                    desired_workers = free_count
-                else:
-                    desired_workers = 0
 
         if len(current_pods) > desired_workers:
             excess = len(current_pods) - desired_workers
