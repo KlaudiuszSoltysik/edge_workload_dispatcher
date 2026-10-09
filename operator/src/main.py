@@ -24,7 +24,7 @@ NODE_GPU_FREE = Gauge(
     "edge_node_gpu_free", "Number of free GPUs on a node", ["node_name"]
 )
 
-QUEUE_THRESHOLD = int(os.getenv("QUEUE_THRESHOLD", "5"))
+QUEUE_THRESHOLD = int(os.getenv("QUEUE_THRESHOLD", "0"))
 PORTAL_METRICS_URL = os.getenv(
     "PORTAL_METRICS_URL", "http://edge-portal.default.svc.cluster.local/metrics"
 )
@@ -85,13 +85,32 @@ def create_task(spec, name, namespace, logger, **kwargs):
         namespace="default",
         label_selector=f"node={target_node}",
     )
-    terminating_workers = [
+
+    inference_workers = [
         p
         for p in active_workers.items  # type: ignore
         if p.metadata.labels.get("role") in ["inference-worker", "draining"]
     ]
 
-    if terminating_workers:
+    if inference_workers:
+        for p in inference_workers:
+            if p.metadata.labels.get("role") == "inference-worker":
+                try:
+                    core_api.patch_namespaced_pod(
+                        name=p.metadata.name,
+                        namespace="default",
+                        body={"metadata": {"labels": {"role": "draining"}}},
+                    )
+                    core_api.delete_namespaced_pod(
+                        name=p.metadata.name, namespace="default"
+                    )
+                    logger.info(
+                        f"Evicting inference worker {p.metadata.name} on {target_node} for VIP task {name}"
+                    )
+                except ApiException as err:
+                    if err.status != 404:
+                        logger.error(f"Failed to evict worker {p.metadata.name}: {err}")
+
         raise kopf.TemporaryError(
             f"Node {target_node} is preparing resources (draining workers). Waiting...",
             delay=3,
@@ -444,6 +463,7 @@ def reconcile_inference_workers(logger, **kwargs):
     core_api = client.CoreV1Api()
     available_gpus = get_available_gpus_map(core_api)
     queue_depth = get_inference_queue_depth()
+    logger.info(f"Current inference queue depth: {queue_depth}")
 
     pods = core_api.list_namespaced_pod(
         namespace="default", label_selector="role=inference-worker"

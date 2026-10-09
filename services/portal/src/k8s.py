@@ -1,7 +1,8 @@
-import json
+import asyncio
 import os
-import urllib.request
+import time
 
+import httpx
 from kubernetes import client, config
 from kubernetes.config.config_exception import ConfigException
 
@@ -21,10 +22,7 @@ PLURAL = "workspaces"
 NAMESPACE = "default"
 
 
-INFERENCE_SERVICE_URL = os.getenv(
-    "INFERENCE_SERVICE_URL", 
-    "http://127.0.0.1:8001"
-)
+INFERENCE_SERVICE_URL = os.getenv("INFERENCE_SERVICE_URL", "http://127.0.0.1:8001")
 
 
 def get_available_hardware():
@@ -87,23 +85,27 @@ def delete_task(task_name: str):
     )
 
 
-def execute_inference(task_type: str, prompt: str, timeout: int = 5) -> str:
-    payload = json.dumps({"task_type": task_type, "prompt": prompt}).encode("utf-8")
-    req = urllib.request.Request(
-        f"{INFERENCE_SERVICE_URL}",
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+async def execute_inference(
+    task_type: str, prompt: str, timeout: float = 45.0, max_wait_seconds: int = 90
+) -> str:
+    payload = {"task_type": task_type, "prompt": prompt}
 
     INFERENCE_REQUESTS_ASSIGNED.inc()
 
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            data = json.loads(response.read().decode("utf-8"))
-            
-            INFERENCE_REQUESTS_COMPLETED.inc()
-            
-            return data.get("result", "Empty response")
-    except Exception as err:  # noqa: BLE001
-        return f"Inference worker unavailable: {err}"
+    start_time = time.time()
+    last_err = None
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        while time.time() - start_time < max_wait_seconds:
+            try:
+                response = await client.post(INFERENCE_SERVICE_URL, json=payload)
+                if response.status_code == 200:
+                    data = response.json()
+                    INFERENCE_REQUESTS_COMPLETED.inc()
+                    return data.get("result", "Empty response")
+            except Exception as err:  # noqa: BLE001
+                last_err = err
+                await asyncio.sleep(1.5)
+
+    INFERENCE_REQUESTS_COMPLETED.inc()
+    return f"Inference worker unavailable (timed out after {max_wait_seconds}s): {last_err}"

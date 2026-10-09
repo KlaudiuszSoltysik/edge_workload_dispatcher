@@ -13,3 +13,5 @@ kind load docker-image edge-portal:latest --name edge-workload-dispatcher
 helm upgrade --install edge-dispatcher ./deploy/helm/edge-dispatcher
 
 docker start edge-workload-dispatcher-control-plane edge-workload-dispatcher-worker edge-workload-dispatcher-worker2 edge-workload-dispatcher-worker3 edge-workload-dispatcher-worker4
+
+kubectl port-forward -n monitoring svc/prometheus-grafana 3000:80

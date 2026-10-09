@@ -20,4 +20,4 @@ app.include_router(provision_views_router)
 
 
 metrics_app = make_asgi_app()
-app.mount("/metrics", metrics_app)
+app.mount("/metrics/", metrics_app)
